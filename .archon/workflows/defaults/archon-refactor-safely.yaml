@@ -522,12 +522,24 @@ nodes:
     bash: |
       set -euo pipefail
       EXPECTED="$BASE_BRANCH"
-      ACTUAL=$(gh pr view --json baseRefName -q '.baseRefName')
-      if [ "$ACTUAL" != "$EXPECTED" ]; then
-        PR_NUMBER=$(gh pr view --json number -q '.number')
-        echo "Base mismatch on PR #$PR_NUMBER: expected=$EXPECTED actual=$ACTUAL — re-targeting" >&2
-        gh pr edit "$PR_NUMBER" --base "$EXPECTED"
+      PR_REF=""
+      if [ -s "$ARTIFACTS_DIR/.pr-url" ]; then
+        PR_REF=$(tr -d '[:space:]' < "$ARTIFACTS_DIR/.pr-url")
+      elif [ -s "$ARTIFACTS_DIR/.pr-number" ]; then
+        PR_REF=$(tr -d '[:space:]' < "$ARTIFACTS_DIR/.pr-number")
       else
-        echo "PR base verified: $EXPECTED"
+        PR_REF=$(gh pr list --head "$(git branch --show-current)" --state open --json url --jq '.[0].url')
+      fi
+      if [ -z "$PR_REF" ]; then
+        echo "Could not resolve PR from $ARTIFACTS_DIR/.pr-url, .pr-number, or current branch" >&2
+        exit 1
+      fi
+      ACTUAL=$(gh pr view "$PR_REF" --json baseRefName -q '.baseRefName')
+      PR_NUMBER=$(gh pr view "$PR_REF" --json number -q '.number')
+      if [ "$ACTUAL" != "$EXPECTED" ]; then
+        echo "Base mismatch on PR #$PR_NUMBER: expected=$EXPECTED actual=$ACTUAL — re-targeting" >&2
+        gh pr edit "$PR_REF" --base "$EXPECTED"
+      else
+        echo "PR #$PR_NUMBER base verified: $EXPECTED"
       fi
     depends_on: [create-pr]

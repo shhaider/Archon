@@ -110,6 +110,20 @@ describe('bundled-defaults', () => {
       expect(content).not.toContain('sed -i "s/SPRINT_COUNT_PLACEHOLDER/$SPRINT_COUNT/"');
     });
 
+    it('PR-review workflows verify PR base from artifacts instead of branch autodetection', () => {
+      const workflows = Object.entries(BUNDLED_WORKFLOWS).filter(([, content]) =>
+        content.includes('id: verify-pr-base')
+      );
+      expect(workflows.length).toBeGreaterThan(0);
+
+      for (const [, content] of workflows) {
+        expect(content).toContain('$ARTIFACTS_DIR/.pr-url');
+        expect(content).toContain('$ARTIFACTS_DIR/.pr-number');
+        expect(content).toContain('ACTUAL=$(gh pr view "$PR_REF" --json baseRefName');
+        expect(content).not.toContain('ACTUAL=$(gh pr view --json baseRefName');
+      }
+    });
+
     it('should have valid YAML structure', () => {
       for (const content of Object.values(BUNDLED_WORKFLOWS)) {
         expect(content).toContain('name:');
