@@ -359,6 +359,20 @@ export class SqliteAdapter implements IDatabase {
     } catch (e: unknown) {
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_session_columns_failed');
     }
+
+    // Codebases columns (P4-A) — forward-compatible per-repo max-parallel cap
+    try {
+      const cbCols = this.db.prepare("PRAGMA table_info('remote_agent_codebases')").all() as {
+        name: string;
+      }[];
+      const cbColNames = new Set(cbCols.map(c => c.name));
+
+      if (!cbColNames.has('max_parallel_workers')) {
+        this.db.run('ALTER TABLE remote_agent_codebases ADD COLUMN max_parallel_workers INTEGER');
+      }
+    } catch (e: unknown) {
+      getLog().warn({ err: e as Error }, 'db.sqlite_migration_codebases_columns_failed');
+    }
   }
 
   /**
@@ -381,6 +395,7 @@ export class SqliteAdapter implements IDatabase {
         default_branch TEXT DEFAULT 'main',
         ai_assistant_type TEXT DEFAULT 'claude',
         commands TEXT DEFAULT '{}',
+        max_parallel_workers INTEGER,
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now'))
       );
@@ -452,6 +467,58 @@ export class SqliteAdapter implements IDatabase {
         ON remote_agent_isolation_environments (codebase_id, workflow_type, workflow_id)
         WHERE status = 'active';
 
+      -- Coordinator runs table (P4-A) — see docs/adr/0001-multi-root-coordinator-model.md
+      CREATE TABLE IF NOT EXISTS remote_agent_coordinator_runs (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        conversation_id TEXT NOT NULL REFERENCES remote_agent_conversations(id) ON DELETE CASCADE,
+        codebase_id TEXT NOT NULL REFERENCES remote_agent_codebases(id) ON DELETE CASCADE,
+        parent_run_id TEXT REFERENCES remote_agent_coordinator_runs(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'planning',
+        max_parallel_workers INTEGER NOT NULL DEFAULT 3,
+        metadata TEXT DEFAULT '{}',
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        completed_at TEXT
+      );
+
+      -- Coordinator tasks table (P4-A) — DAG nodes
+      CREATE TABLE IF NOT EXISTS remote_agent_coordinator_tasks (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        coordinator_run_id TEXT NOT NULL REFERENCES remote_agent_coordinator_runs(id) ON DELETE CASCADE,
+        external_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT,
+        state TEXT NOT NULL DEFAULT 'blocked',
+        depends_on TEXT NOT NULL DEFAULT '[]',
+        evidence TEXT NOT NULL DEFAULT '{}',
+        metadata TEXT DEFAULT '{}',
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        started_at TEXT,
+        completed_at TEXT,
+        UNIQUE (coordinator_run_id, external_key)
+      );
+
+      -- Coordinator task claims table (P4-A) — lease + audit trail
+      CREATE TABLE IF NOT EXISTS remote_agent_coordinator_task_claims (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        task_id TEXT NOT NULL REFERENCES remote_agent_coordinator_tasks(id) ON DELETE CASCADE,
+        coordinator_run_id TEXT NOT NULL REFERENCES remote_agent_coordinator_runs(id) ON DELETE CASCADE,
+        worker_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+        worker_label TEXT,
+        claimed_at TEXT NOT NULL DEFAULT (datetime('now')),
+        lease_expires_at TEXT NOT NULL,
+        released_at TEXT,
+        outcome TEXT,
+        metadata TEXT DEFAULT '{}'
+      );
+
+      -- Active-claim invariant: at most one active claim per task
+      CREATE UNIQUE INDEX IF NOT EXISTS unique_active_task_claim
+        ON remote_agent_coordinator_task_claims (task_id)
+        WHERE released_at IS NULL;
+
       -- Workflow runs table
       CREATE TABLE IF NOT EXISTS remote_agent_workflow_runs (
         id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -519,6 +586,26 @@ export class SqliteAdapter implements IDatabase {
         ON remote_agent_sessions(parent_session_id);
       CREATE INDEX IF NOT EXISTS idx_sessions_conversation_started
         ON remote_agent_sessions(conversation_id, started_at DESC);
+
+      -- From PG migration 022: coordinator-model indexes (P4-A)
+      CREATE INDEX IF NOT EXISTS idx_coordinator_runs_conversation
+        ON remote_agent_coordinator_runs(conversation_id);
+      CREATE INDEX IF NOT EXISTS idx_coordinator_runs_codebase
+        ON remote_agent_coordinator_runs(codebase_id);
+      CREATE INDEX IF NOT EXISTS idx_coordinator_runs_status
+        ON remote_agent_coordinator_runs(status);
+      CREATE INDEX IF NOT EXISTS idx_coordinator_tasks_run
+        ON remote_agent_coordinator_tasks(coordinator_run_id);
+      CREATE INDEX IF NOT EXISTS idx_coordinator_tasks_run_state
+        ON remote_agent_coordinator_tasks(coordinator_run_id, state);
+      CREATE INDEX IF NOT EXISTS idx_coordinator_claims_run_active
+        ON remote_agent_coordinator_task_claims(coordinator_run_id)
+        WHERE released_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_coordinator_claims_lease
+        ON remote_agent_coordinator_task_claims(lease_expires_at)
+        WHERE released_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_coordinator_claims_worker_run
+        ON remote_agent_coordinator_task_claims(worker_run_id);
     `);
     getLog().info('db.sqlite_schema_initialized');
   }
@@ -554,6 +641,10 @@ export const sqliteDialect: SqlDialect = {
 
   daysSince(column: string): string {
     return `(julianday('now') - julianday(${column}))`;
+  },
+
+  nowPlusSeconds(paramIndex: number): string {
+    return `datetime('now', '+' || $${String(paramIndex)} || ' seconds')`;
   },
 };
 

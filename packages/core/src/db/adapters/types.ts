@@ -90,4 +90,15 @@ export interface SqlDialect {
    * @param column - Timestamp column name
    */
   daysSince(column: string): string;
+
+  /**
+   * SQL expression for "now + N seconds" — used to compute lease-expiry
+   * timestamps in the DB clock rather than the application clock.
+   *
+   * Postgres: `NOW() + ($N || ' seconds')::interval`
+   * SQLite:   `datetime('now', '+' || $N || ' seconds')`
+   *
+   * @param paramIndex - Parameter placeholder index for the seconds value
+   */
+  nowPlusSeconds(paramIndex: number): string;
 }

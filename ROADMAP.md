@@ -122,6 +122,8 @@ Acceptance:
 
 ### P4 - Multi-Root Coordinator Architecture
 
+See ADR: [docs/adr/0001-multi-root-coordinator-model.md](docs/adr/0001-multi-root-coordinator-model.md) (P4-A — schema + DB layer + thin API skeleton; P4-B/C/D/E follow).
+
 Goal: support multiple root-level coordinator conversations, each capable of
 dispatching multiple coding workers.
 
