@@ -7,11 +7,32 @@ import { dirname } from 'path';
 import type { IDatabase, QueryResult, SqlDialect } from './types';
 import { createLogger } from '@archon/paths';
 
+/**
+ * Bumped when the DDL block in `createSchema()` or `migrateColumns()` changes
+ * in a way that requires re-running on existing DBs. `PRAGMA user_version` is
+ * compared against this on every adapter open; when they match, schema init is
+ * skipped entirely so concurrent CLI processes don't all fight over the
+ * write-lock for an idempotent no-op.
+ */
+const CURRENT_SCHEMA_VERSION = 1;
+
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
 function getLog(): ReturnType<typeof createLogger> {
   if (!cachedLog) cachedLog = createLogger('db.sqlite');
   return cachedLog;
+}
+
+/**
+ * Detect bun:sqlite's "database is locked" / SQLITE_BUSY family. Treats
+ * SQLITE_LOCKED (shared-cache contention) the same as SQLITE_BUSY because the
+ * retry strategy is identical for both.
+ */
+function isSqliteBusyError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const code = (e as Error & { code?: string }).code;
+  if (code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED') return true;
+  return /database is locked/i.test(e.message);
 }
 
 export class SqliteAdapter implements IDatabase {
@@ -28,17 +49,72 @@ export class SqliteAdapter implements IDatabase {
 
     this.db = new Database(dbPath);
 
-    // Enable WAL mode for better concurrent performance
-    this.db.run('PRAGMA journal_mode = WAL');
-
-    // Retry busy locks up to 5s to avoid SQLITE_BUSY during parallel workflows
+    // busy_timeout MUST be set first: it arbitrates every other PRAGMA / DDL
+    // below. Setting WAL before busy_timeout means the WAL upgrade itself has
+    // a zero retry budget against a concurrent writer, which is exactly the
+    // race we hit when two CLI processes start simultaneously.
     this.db.run('PRAGMA busy_timeout = 5000');
+
+    // Enable WAL mode for better concurrent read+write performance.
+    // The WAL upgrade itself takes a write lock — when two processes open the
+    // same fresh DB simultaneously, busy_timeout alone is not always enough
+    // (observed: SQLITE_BUSY here even with timeout=5s). Route through the
+    // retry helper as a backstop.
+    this.runWithBusyRetry('pragma-wal', () => this.db.run('PRAGMA journal_mode = WAL'));
+
+    // synchronous=NORMAL is the SQLite-recommended pairing with WAL: durable
+    // across crashes, ~2-3× faster commits, only weakens durability of the
+    // very last commit on hard power-loss (acceptable for a developer tool).
+    this.db.run('PRAGMA synchronous = NORMAL');
 
     // Enable foreign keys
     this.db.run('PRAGMA foreign_keys = ON');
 
     // Initialize schema if needed
     this.initSchema();
+  }
+
+  /**
+   * Retry a synchronous SQLite operation on SQLITE_BUSY / "database is locked".
+   * `busy_timeout=5s` already covers most contention; this is a backstop for
+   * the residual case where a writer holds the lock longer than that
+   * (e.g., DDL on a slow disk, large WAL checkpoint). Bounded total wait of
+   * ≤650ms, only spent on real contention — happy path pays nothing.
+   */
+  private runWithBusyRetry<T>(label: string, op: () => T): T {
+    const delays = [50, 150, 450];
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= delays.length; attempt++) {
+      try {
+        return op();
+      } catch (e) {
+        lastErr = e;
+        if (!isSqliteBusyError(e) || attempt === delays.length) {
+          if (isSqliteBusyError(e)) {
+            getLog().error(
+              { err: e as Error, label, attempts: attempt + 1 },
+              'db.sqlite_busy_retry_exhausted'
+            );
+          }
+          throw e;
+        }
+        const waitMs = delays[attempt];
+        getLog().warn(
+          { err: e as Error, label, attempt: attempt + 1, waitMs },
+          'db.sqlite_busy_retry'
+        );
+        // Synchronous busy-wait: bun:sqlite's run/all/run are all sync, so an
+        // `await setTimeout` in this hot path would force every SELECT to
+        // yield even on success. The wait fires only on actual SQLITE_BUSY,
+        // which by definition is already the slow path; ≤650ms is strictly
+        // better than failing the way the unfixed code did.
+        const start = Date.now();
+        while (Date.now() - start < waitMs) {
+          /* bounded busy-wait — only fires on real lock contention */
+        }
+      }
+    }
+    throw lastErr;
   }
 
   async query<T>(sql: string, params?: unknown[]): Promise<QueryResult<T>> {
@@ -49,44 +125,46 @@ export class SqliteAdapter implements IDatabase {
     );
 
     try {
-      // Determine if this is a SELECT or mutation
-      const trimmedSql = sql.trim().toUpperCase();
-      const isSelect = trimmedSql.startsWith('SELECT') || trimmedSql.startsWith('WITH');
+      return this.runWithBusyRetry('query', () => {
+        // Determine if this is a SELECT or mutation
+        const trimmedSql = sql.trim().toUpperCase();
+        const isSelect = trimmedSql.startsWith('SELECT') || trimmedSql.startsWith('WITH');
 
-      // Cast params to SQLite's expected type
-      const sqliteParams = reorderedParams as SQLQueryBindings[];
+        // Cast params to SQLite's expected type
+        const sqliteParams = reorderedParams as SQLQueryBindings[];
 
-      if (isSelect) {
-        const stmt = this.db.prepare(convertedSql);
-        const rows = stmt.all(...sqliteParams) as T[];
-        return { rows, rowCount: rows.length };
-      } else {
-        const upperSql = sql.toUpperCase();
-
-        // Handle INSERT with RETURNING using native SQLite RETURNING (3.35+)
-        // We must use .all() instead of .run() because .run() discards
-        // RETURNING results, and its lastInsertRowid is unreliable when
-        // ON CONFLICT DO UPDATE fires.
-        if (upperSql.includes('RETURNING') && upperSql.includes('INSERT')) {
+        if (isSelect) {
           const stmt = this.db.prepare(convertedSql);
           const rows = stmt.all(...sqliteParams) as T[];
           return { rows, rowCount: rows.length };
-        }
+        } else {
+          const upperSql = sql.toUpperCase();
 
-        // UPDATE/DELETE with RETURNING not supported
-        if (upperSql.includes('RETURNING')) {
-          throw new Error(
-            'SQLite adapter does not support RETURNING clause on UPDATE/DELETE statements. ' +
-              `Query: ${convertedSql.substring(0, 100)}... ` +
-              'Hint: Use a SELECT before the mutation if you need the row data.'
-          );
-        }
+          // Handle INSERT with RETURNING using native SQLite RETURNING (3.35+)
+          // We must use .all() instead of .run() because .run() discards
+          // RETURNING results, and its lastInsertRowid is unreliable when
+          // ON CONFLICT DO UPDATE fires.
+          if (upperSql.includes('RETURNING') && upperSql.includes('INSERT')) {
+            const stmt = this.db.prepare(convertedSql);
+            const rows = stmt.all(...sqliteParams) as T[];
+            return { rows, rowCount: rows.length };
+          }
 
-        // Standard INSERT/UPDATE/DELETE without RETURNING
-        const stmt = this.db.prepare(convertedSql);
-        const result = stmt.run(...sqliteParams);
-        return { rows: [], rowCount: result.changes };
-      }
+          // UPDATE/DELETE with RETURNING not supported
+          if (upperSql.includes('RETURNING')) {
+            throw new Error(
+              'SQLite adapter does not support RETURNING clause on UPDATE/DELETE statements. ' +
+                `Query: ${convertedSql.substring(0, 100)}... ` +
+                'Hint: Use a SELECT before the mutation if you need the row data.'
+            );
+          }
+
+          // Standard INSERT/UPDATE/DELETE without RETURNING
+          const stmt = this.db.prepare(convertedSql);
+          const result = stmt.run(...sqliteParams);
+          return { rows: [], rowCount: result.changes };
+        }
+      });
     } catch (error) {
       const err = error as Error;
       getLog().error({ err, sql: convertedSql, params }, 'db.sqlite_query_failed');
@@ -97,7 +175,10 @@ export class SqliteAdapter implements IDatabase {
   async withTransaction<T>(
     fn: (query: <U>(sql: string, params?: unknown[]) => Promise<QueryResult<U>>) => Promise<T>
   ): Promise<T> {
-    await this.query('BEGIN');
+    // Retry only the initial BEGIN — once we hold the transaction the inner
+    // statements go through `query()` which already retries per-statement.
+    // Retrying a partially-applied transaction is unsafe, so we don't.
+    this.runWithBusyRetry('tx-begin', () => this.db.run('BEGIN'));
     try {
       const result = await fn(this.query.bind(this));
       await this.query('COMMIT');
@@ -146,13 +227,60 @@ export class SqliteAdapter implements IDatabase {
   }
 
   /**
-   * Initialize database schema.
-   * Always runs createSchema() since all statements use IF NOT EXISTS,
-   * ensuring new tables from migrations are created in existing databases.
+   * Initialize database schema, gated by `PRAGMA user_version`.
+   *
+   * Concurrent CLI invocations all opened a fresh adapter and unconditionally
+   * ran the DDL block — every CREATE/ALTER takes the write lock, so the second
+   * process saw `SQLITE_BUSY`. This now reads `user_version` first; when it
+   * matches `CURRENT_SCHEMA_VERSION` we return immediately (no lock taken).
+   *
+   * When a real upgrade is needed the DDL runs inside a single `BEGIN
+   * IMMEDIATE` block. `busy_timeout` makes the loser of the race wait up to
+   * 5s for the winner; once it gets the lock it re-reads `user_version`
+   * inside the transaction and skips DDL if the winner already migrated.
    */
   private initSchema(): void {
-    this.createSchema();
-    this.migrateColumns();
+    const row = this.db.prepare('PRAGMA user_version').get() as
+      | { user_version: number }
+      | undefined;
+    const currentVersion = row?.user_version ?? 0;
+
+    if (currentVersion === CURRENT_SCHEMA_VERSION) {
+      getLog().debug({ version: currentVersion }, 'db.sqlite_schema_skip_already_current');
+      return;
+    }
+
+    getLog().info(
+      { fromVersion: currentVersion, toVersion: CURRENT_SCHEMA_VERSION },
+      'db.sqlite_schema_init_started'
+    );
+
+    this.db.run('BEGIN IMMEDIATE');
+    try {
+      // Re-check inside the transaction: if we lost the race for the lock,
+      // the winner has already bumped user_version and we should skip DDL.
+      const inner = this.db.prepare('PRAGMA user_version').get() as
+        | { user_version: number }
+        | undefined;
+      if ((inner?.user_version ?? 0) === CURRENT_SCHEMA_VERSION) {
+        this.db.run('COMMIT');
+        getLog().info('db.sqlite_schema_skip_after_lock');
+        return;
+      }
+
+      this.createSchema();
+      this.migrateColumns();
+      this.db.run(`PRAGMA user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
+      this.db.run('COMMIT');
+      getLog().info({ version: CURRENT_SCHEMA_VERSION }, 'db.sqlite_schema_init_completed');
+    } catch (e) {
+      try {
+        this.db.run('ROLLBACK');
+      } catch {
+        /* best-effort — original error is the one to surface */
+      }
+      throw e;
+    }
   }
 
   /**
