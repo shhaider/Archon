@@ -212,7 +212,7 @@ Use Archon to upgrade Archon, with bounded parallelism.
 ## Initial Worker Queue
 
 1. P2-A: reproduce and fix concurrent SQLite lock failures.
-2. P1-A: bootstrap source GUI and add a real-user GUI smoke journey.
+2. P1-A: bootstrap source GUI and add a real-user GUI smoke journey. (in progress — see `packages/gui-smoke/`)
 3. P3-A: design and implement real-execution proof validation for PR-producing
    workflows.
 4. P4-A: design the coordinator/run/task/claim database model and API surface.

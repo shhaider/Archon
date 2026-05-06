@@ -119,4 +119,6 @@ packages/server/.env
 .playwright-cli/
 skills-lock.json
 test-results/
+packages/gui-smoke/playwright-report/
+packages/gui-smoke/screenshots/
 .archon/ralph/

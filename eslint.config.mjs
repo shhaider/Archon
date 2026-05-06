@@ -43,7 +43,12 @@ export default tseslint.config(
 
   // Project-specific settings
   {
-    files: ['packages/*/src/**/*.{ts,tsx}', 'scripts/**/*.ts'],
+    files: [
+      'packages/*/src/**/*.{ts,tsx}',
+      'packages/gui-smoke/{tests,playwright.config.ts}/**/*.ts',
+      'packages/gui-smoke/playwright.config.ts',
+      'scripts/**/*.ts',
+    ],
     languageOptions: {
       parserOptions: {
         projectService: true,

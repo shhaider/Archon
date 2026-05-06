@@ -19,6 +19,8 @@
     "check:bundled-skill": "bun run scripts/check-bundled-skill.ts --check",
     "test": "bun --filter '*' --parallel test",
     "test:watch": "bun --filter @archon/server test:watch",
+    "test:gui": "bun --filter @archon/gui-smoke smoke",
+    "test:gui:install": "bun --filter @archon/gui-smoke smoke:install",
     "type-check": "bun --filter '*' type-check && bun x tsc --noEmit -p scripts/tsconfig.json",
     "lint": "bun x eslint . --cache",
     "lint:fix": "bun x eslint . --cache --fix",

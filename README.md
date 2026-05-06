@@ -338,6 +338,19 @@ Contributions welcome! See the open [issues](https://github.com/coleam00/Archon/
 
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a pull request.
 
+### GUI smoke (Playwright)
+
+Run a browser smoke journey against the source `bun run dev` web/server:
+
+```bash
+bun run test:gui:install   # one-time: install Chromium for Playwright
+bun run test:gui           # boot dev + walk Chat / Dashboard / Workflows / Builder
+```
+
+The smoke run is intentionally not part of `bun run validate`. See
+[`packages/gui-smoke/README.md`](packages/gui-smoke/README.md) for triage
+notes and unsupported setups.
+
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/chart?repos=coleam00/Archon&type=date&legend=top-left)](https://www.star-history.com/?repos=coleam00%2FArchon&type=date&legend=top-left)
