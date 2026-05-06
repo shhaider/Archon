@@ -605,6 +605,26 @@ describe('POST /api/coordinators/:runId/tasks/:taskId/claim', () => {
     expect(mockClaimTask).not.toHaveBeenCalled();
   });
 
+  test('returns 400 and does not claim when task is not ready', async () => {
+    mockGetCoordinatorRun.mockImplementationOnce(async () => MOCK_RUN);
+    mockGetCoordinatorTask.mockImplementationOnce(async () => ({
+      ...MOCK_TASK,
+      state: 'blocked',
+    }));
+
+    const app = makeApp();
+    const response = await app.request('/api/coordinators/run-1/tasks/task-1/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lease_seconds: 900 }),
+    });
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('not ready');
+    expect(mockCountActiveClaimsForRun).not.toHaveBeenCalled();
+    expect(mockClaimTask).not.toHaveBeenCalled();
+  });
+
   test('returns 404 when run not found', async () => {
     mockGetCoordinatorRun.mockImplementationOnce(async () => null);
 

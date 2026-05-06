@@ -184,6 +184,14 @@ export async function releaseClaim(
   }
   const claim = normalizeClaim(row);
 
+  if (updateResult.rowCount === 1) {
+    const nextTaskState =
+      opts.outcome === 'succeeded' ? 'completed' : opts.outcome === 'failed' ? 'failed' : null;
+    if (nextTaskState !== null) {
+      await coordinatorTaskDb.transitionTaskState(claim.task_id, nextTaskState);
+    }
+  }
+
   // Fan-out to evidence recording — only on (a) we just released it (rowCount===1)
   // AND (b) succeeded outcome AND (c) evidence provided. If the row was already
   // released by an earlier call, we skip evidence-recording to keep release

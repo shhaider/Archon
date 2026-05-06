@@ -14,8 +14,10 @@ mock.module('./connection', () => ({
 
 // Mock coordinator-tasks so we can assert that releaseClaim fans out to recordEvidence.
 const mockRecordEvidence = mock(() => Promise.resolve());
+const mockTransitionTaskState = mock(() => Promise.resolve());
 mock.module('./coordinator-tasks', () => ({
   recordEvidence: mockRecordEvidence,
+  transitionTaskState: mockTransitionTaskState,
 }));
 
 import {
@@ -34,6 +36,8 @@ describe('coordinator-claims database', () => {
     mockQuery.mockImplementation(() => Promise.resolve(createQueryResult([])));
     mockRecordEvidence.mockReset();
     mockRecordEvidence.mockImplementation(() => Promise.resolve());
+    mockTransitionTaskState.mockReset();
+    mockTransitionTaskState.mockImplementation(() => Promise.resolve());
   });
 
   const mockClaim: CoordinatorTaskClaim = {
@@ -138,7 +142,23 @@ describe('coordinator-claims database', () => {
         evidence: { commit_sha: 'abc' },
       });
 
+      expect(mockTransitionTaskState).toHaveBeenCalledWith('task-1', 'completed');
       expect(mockRecordEvidence).toHaveBeenCalledWith('task-1', { commit_sha: 'abc' });
+    });
+
+    test('on failed outcome, transitions the task to failed without evidence fan-out', async () => {
+      const released = {
+        ...mockClaim,
+        released_at: new Date(),
+        outcome: 'failed' as const,
+      };
+      mockQuery.mockResolvedValueOnce(createQueryResult([], 1));
+      mockQuery.mockResolvedValueOnce(createQueryResult([released]));
+
+      await releaseClaim('claim-1', { outcome: 'failed' });
+
+      expect(mockTransitionTaskState).toHaveBeenCalledWith('task-1', 'failed');
+      expect(mockRecordEvidence).not.toHaveBeenCalled();
     });
 
     test('idempotent: when UPDATE matches no rows, returns existing row WITHOUT calling recordEvidence', async () => {
@@ -159,6 +179,7 @@ describe('coordinator-claims database', () => {
 
       expect(result).toEqual(prev);
       // Skipped — release was already done by an earlier call.
+      expect(mockTransitionTaskState).not.toHaveBeenCalled();
       expect(mockRecordEvidence).not.toHaveBeenCalled();
     });
 

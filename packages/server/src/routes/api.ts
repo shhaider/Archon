@@ -2597,6 +2597,9 @@ export function registerApiRoutes(
       if (task?.coordinator_run_id !== runId) {
         return apiError(c, 404, 'Coordinator task not found');
       }
+      if (task.state !== 'ready') {
+        return apiError(c, 400, `Coordinator task is not ready (state: ${task.state})`);
+      }
 
       // max_parallel_workers enforcement happens here in the API. Note: this
       // count + INSERT is NOT in a transaction in P4-A — documented as
