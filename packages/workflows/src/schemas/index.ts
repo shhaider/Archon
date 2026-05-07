@@ -119,3 +119,26 @@ export type {
 
 // DagWorkflow — alias kept for backward compatibility
 export type { WorkflowDefinition as DagWorkflow } from './workflow';
+
+// Coordinator (P4-A): runs, tasks, claims, evidence
+export {
+  coordinatorRunStatusSchema,
+  coordinatorTaskStateSchema,
+  claimOutcomeSchema,
+  evidenceSchema,
+  coordinatorRunSchema,
+  coordinatorTaskSchema,
+  coordinatorTaskClaimSchema,
+  TERMINAL_COORDINATOR_RUN_STATUSES,
+  TERMINAL_COORDINATOR_TASK_STATES,
+  ACTIVE_COORDINATOR_TASK_STATES,
+} from './coordinator';
+export type {
+  CoordinatorRunStatus,
+  CoordinatorTaskState,
+  ClaimOutcome,
+  Evidence,
+  CoordinatorRun,
+  CoordinatorTask,
+  CoordinatorTaskClaim,
+} from './coordinator';

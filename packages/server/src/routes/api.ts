@@ -68,6 +68,9 @@ import * as isolationEnvDb from '@archon/core/db/isolation-environments';
 import * as workflowDb from '@archon/core/db/workflows';
 import * as workflowEventDb from '@archon/core/db/workflow-events';
 import * as messageDb from '@archon/core/db/messages';
+import * as coordinatorRunDb from '@archon/core/db/coordinator-runs';
+import * as coordinatorTaskDb from '@archon/core/db/coordinator-tasks';
+import * as coordinatorClaimDb from '@archon/core/db/coordinator-claims';
 import { errorSchema } from './schemas/common.schemas';
 import { updateCheckResponseSchema } from './schemas/system.schemas';
 import {
@@ -122,6 +125,22 @@ import {
 } from './schemas/config.schemas';
 import { providerListResponseSchema } from './schemas/provider.schemas';
 import { getProviderInfoList, isRegisteredProvider } from '@archon/providers';
+import {
+  createCoordinatorRunBodySchema,
+  createCoordinatorTaskBodySchema,
+  updateCoordinatorTaskStateBodySchema,
+  claimCoordinatorTaskBodySchema,
+  releaseCoordinatorClaimBodySchema,
+  heartbeatClaimBodySchema,
+  coordinatorRunListResponseSchema,
+  coordinatorRunResponseSchema,
+  coordinatorRunDetailResponseSchema,
+  coordinatorTaskResponseSchema,
+  coordinatorReadyTasksResponseSchema,
+  coordinatorClaimResponseSchema,
+  coordinatorReleaseClaimResponseSchema,
+  coordinatorHeartbeatResponseSchema,
+} from './schemas/coordinator.schemas';
 
 // Read app version: use build-time constant in binary, package.json in dev
 let appVersion = 'unknown';
@@ -727,6 +746,171 @@ const getWorkflowRunRoute = createRoute({
       description: 'Workflow run detail',
     },
     404: jsonError('Not found'),
+    500: jsonError('Server error'),
+  },
+});
+
+// =========================================================================
+// Coordinator route configs (P4-A) — see docs/adr/0001-multi-root-coordinator-model.md
+// =========================================================================
+
+const listCoordinatorRunsRoute = createRoute({
+  method: 'get',
+  path: '/api/coordinators',
+  tags: ['Coordinators'],
+  summary: 'List coordinator runs',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: coordinatorRunListResponseSchema } },
+      description: 'List of coordinator runs',
+    },
+    500: jsonError('Server error'),
+  },
+});
+
+const createCoordinatorRunRoute = createRoute({
+  method: 'post',
+  path: '/api/coordinators',
+  tags: ['Coordinators'],
+  summary: 'Create a new coordinator run',
+  request: {
+    body: { content: { 'application/json': { schema: createCoordinatorRunBodySchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: coordinatorRunResponseSchema } },
+      description: 'Created',
+    },
+    400: jsonError('Bad request'),
+    500: jsonError('Server error'),
+  },
+});
+
+const getCoordinatorRunRoute = createRoute({
+  method: 'get',
+  path: '/api/coordinators/{id}',
+  tags: ['Coordinators'],
+  summary: 'Get a coordinator run with its tasks and active claims',
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: coordinatorRunDetailResponseSchema } },
+      description: 'Coordinator run detail',
+    },
+    404: jsonError('Not found'),
+    500: jsonError('Server error'),
+  },
+});
+
+const createCoordinatorTaskRoute = createRoute({
+  method: 'post',
+  path: '/api/coordinators/{id}/tasks',
+  tags: ['Coordinators'],
+  summary: 'Create a task on a coordinator run (rejects cycles in the DAG)',
+  request: {
+    params: z.object({ id: z.string() }),
+    body: { content: { 'application/json': { schema: createCoordinatorTaskBodySchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: coordinatorTaskResponseSchema } },
+      description: 'Created',
+    },
+    400: jsonError('Bad request (cycle, unknown dep, duplicate external_key, etc.)'),
+    404: jsonError('Coordinator run not found'),
+    500: jsonError('Server error'),
+  },
+});
+
+const updateCoordinatorTaskStateRoute = createRoute({
+  method: 'patch',
+  path: '/api/coordinators/{runId}/tasks/{taskId}',
+  tags: ['Coordinators'],
+  summary: 'Transition a task state and/or merge evidence',
+  request: {
+    params: z.object({ runId: z.string(), taskId: z.string() }),
+    body: { content: { 'application/json': { schema: updateCoordinatorTaskStateBodySchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: coordinatorTaskResponseSchema } },
+      description: 'Updated',
+    },
+    400: jsonError('Bad request (terminal-state guard, etc.)'),
+    404: jsonError('Task not found'),
+    500: jsonError('Server error'),
+  },
+});
+
+const getCoordinatorReadyTasksRoute = createRoute({
+  method: 'get',
+  path: '/api/coordinators/{id}/ready-tasks',
+  tags: ['Coordinators'],
+  summary: 'List tasks in state=ready that have no active claim',
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: coordinatorReadyTasksResponseSchema } },
+      description: 'Ready tasks',
+    },
+    500: jsonError('Server error'),
+  },
+});
+
+const claimCoordinatorTaskRoute = createRoute({
+  method: 'post',
+  path: '/api/coordinators/{runId}/tasks/{taskId}/claim',
+  tags: ['Coordinators'],
+  summary:
+    'Attempt to claim a task. Returns 200 { claim: null } when the task is already claimed (NOT 409). Returns 429 when the run is at max_parallel_workers.',
+  request: {
+    params: z.object({ runId: z.string(), taskId: z.string() }),
+    body: { content: { 'application/json': { schema: claimCoordinatorTaskBodySchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: coordinatorClaimResponseSchema } },
+      description: 'Claim result (claim row, or null if already claimed)',
+    },
+    404: jsonError('Coordinator run or task not found'),
+    429: jsonError('max_parallel_workers reached for this coordinator run'),
+    500: jsonError('Server error'),
+  },
+});
+
+const releaseCoordinatorClaimRoute = createRoute({
+  method: 'post',
+  path: '/api/coordinators/claims/{claimId}/release',
+  tags: ['Coordinators'],
+  summary: 'Release a claim with an outcome (and optional evidence on success)',
+  request: {
+    params: z.object({ claimId: z.string() }),
+    body: { content: { 'application/json': { schema: releaseCoordinatorClaimBodySchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: coordinatorReleaseClaimResponseSchema } },
+      description: 'Released',
+    },
+    404: jsonError('Claim not found'),
+    500: jsonError('Server error'),
+  },
+});
+
+const heartbeatCoordinatorClaimRoute = createRoute({
+  method: 'post',
+  path: '/api/coordinators/claims/{claimId}/heartbeat',
+  tags: ['Coordinators'],
+  summary: 'Extend a claim lease. Returns extended=false if the claim is already released.',
+  request: {
+    params: z.object({ claimId: z.string() }),
+    body: { content: { 'application/json': { schema: heartbeatClaimBodySchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: coordinatorHeartbeatResponseSchema } },
+      description: 'Heartbeat result',
+    },
     500: jsonError('Server error'),
   },
 });
@@ -2185,6 +2369,301 @@ export function registerApiRoutes(
     } catch (error) {
       getLog().error({ err: error }, 'get_workflow_run_failed');
       return apiError(c, 500, 'Failed to get workflow run');
+    }
+  });
+
+  // =========================================================================
+  // Coordinator endpoints (P4-A) — see docs/adr/0001-multi-root-coordinator-model.md
+  // =========================================================================
+
+  /**
+   * Cycle-detection helper. Mirrors `validateDagStructure()` in
+   * `packages/workflows/src/loader.ts:96-144` — Kahn's algorithm topological
+   * sort. Returns an error message string if a cycle exists, or null if the
+   * graph (existing tasks + the candidate new edge) is a valid DAG.
+   *
+   * `existingTasks` are the run's tasks already in the DB.
+   * `candidate` is the about-to-be-created task with its proposed `depends_on`.
+   *
+   * Schema-vs-graph split: this lives in the route handler, NOT in Zod —
+   * matches the dagNodeSchema vs validateDagStructure split documented in
+   * CLAUDE.md.
+   */
+  function detectCoordinatorTaskCycle(
+    existingTasks: readonly { id: string; depends_on: readonly string[] }[],
+    candidate: { id: string; depends_on: readonly string[] }
+  ): string | null {
+    // Verify every dep id is known. The candidate is the only new node, so its
+    // deps must already exist in `existingTasks`.
+    const knownIds = new Set(existingTasks.map(t => t.id));
+    for (const dep of candidate.depends_on) {
+      if (!knownIds.has(dep)) {
+        return `Task '${candidate.id}' depends_on unknown task '${dep}'`;
+      }
+    }
+
+    // Build the graph including the candidate.
+    const allNodes = [...existingTasks, candidate];
+    const inDegree = new Map<string, number>();
+    const dependents = new Map<string, string[]>();
+    for (const node of allNodes) {
+      inDegree.set(node.id, node.depends_on.length);
+      for (const dep of node.depends_on) {
+        const list = dependents.get(dep) ?? [];
+        list.push(node.id);
+        dependents.set(dep, list);
+      }
+    }
+
+    const queue = allNodes.filter(n => (inDegree.get(n.id) ?? 0) === 0).map(n => n.id);
+    let visited = 0;
+    while (queue.length > 0) {
+      const id = queue.shift();
+      if (id === undefined) break;
+      visited++;
+      for (const dep of dependents.get(id) ?? []) {
+        const newDegree = (inDegree.get(dep) ?? 0) - 1;
+        inDegree.set(dep, newDegree);
+        if (newDegree === 0) queue.push(dep);
+      }
+    }
+    if (visited < allNodes.length) {
+      const cycleNodes = allNodes.filter(n => (inDegree.get(n.id) ?? 0) > 0).map(n => n.id);
+      return `Cycle detected among coordinator tasks: ${cycleNodes.join(', ')}`;
+    }
+    return null;
+  }
+
+  // GET /api/coordinators - List coordinator runs
+  registerOpenApiRoute(listCoordinatorRunsRoute, async c => {
+    try {
+      const runs = await coordinatorRunDb.listCoordinatorRuns();
+      return c.json({ runs });
+    } catch (error) {
+      getLog().error({ err: error }, 'api.coordinator_run_list_failed');
+      return apiError(c, 500, 'Failed to list coordinator runs');
+    }
+  });
+
+  // POST /api/coordinators - Create a coordinator run
+  registerOpenApiRoute(createCoordinatorRunRoute, async c => {
+    try {
+      const body = getValidatedBody(c, createCoordinatorRunBodySchema);
+      const run = await coordinatorRunDb.createCoordinatorRun({
+        conversation_id: body.conversation_id,
+        codebase_id: body.codebase_id,
+        name: body.name,
+        ...(body.max_parallel_workers !== undefined
+          ? { max_parallel_workers: body.max_parallel_workers }
+          : {}),
+        ...(body.parent_run_id !== undefined ? { parent_run_id: body.parent_run_id } : {}),
+      });
+      return c.json({ run });
+    } catch (error) {
+      getLog().error({ err: error }, 'api.coordinator_run_create_failed');
+      return apiError(c, 500, 'Failed to create coordinator run');
+    }
+  });
+
+  // GET /api/coordinators/:id - Detail with tasks and active claims
+  registerOpenApiRoute(getCoordinatorRunRoute, async c => {
+    const id = c.req.param('id') ?? '';
+    try {
+      const run = await coordinatorRunDb.getCoordinatorRun(id);
+      if (!run) return apiError(c, 404, 'Coordinator run not found');
+      const tasks = await coordinatorTaskDb.listCoordinatorTasksByRun(id);
+      // Active claims for this run = scan tasks and pull each one's active claim.
+      const activeClaims = (
+        await Promise.all(tasks.map(t => coordinatorClaimDb.getActiveClaimForTask(t.id)))
+      ).filter((c): c is NonNullable<typeof c> => c !== null);
+      return c.json({ run, tasks, active_claims: activeClaims });
+    } catch (error) {
+      getLog().error({ err: error, runId: id }, 'api.coordinator_run_get_failed');
+      return apiError(c, 500, 'Failed to get coordinator run');
+    }
+  });
+
+  // POST /api/coordinators/:id/tasks - Create a task (rejects cycles)
+  registerOpenApiRoute(createCoordinatorTaskRoute, async c => {
+    const runId = c.req.param('id') ?? '';
+    try {
+      const run = await coordinatorRunDb.getCoordinatorRun(runId);
+      if (!run) return apiError(c, 404, 'Coordinator run not found');
+
+      const body = getValidatedBody(c, createCoordinatorTaskBodySchema);
+
+      // Cycle / unknown-dep detection — see schema-vs-graph split note.
+      // We use a placeholder id for the candidate since the real id is assigned
+      // by the DB on INSERT. The candidate has no in-edges from itself.
+      if (body.depends_on && body.depends_on.length > 0) {
+        const existing = await coordinatorTaskDb.listCoordinatorTasksByRun(runId);
+        const cycleErr = detectCoordinatorTaskCycle(
+          existing.map(t => ({ id: t.id, depends_on: t.depends_on })),
+          { id: '__candidate__', depends_on: body.depends_on }
+        );
+        if (cycleErr !== null) {
+          return apiError(c, 400, cycleErr);
+        }
+      }
+
+      const task = await coordinatorTaskDb.createCoordinatorTask({
+        coordinator_run_id: runId,
+        external_key: body.external_key,
+        title: body.title,
+        ...(body.body !== undefined ? { body: body.body } : {}),
+        ...(body.depends_on !== undefined ? { depends_on: body.depends_on } : {}),
+      });
+      return c.json({ task });
+    } catch (error) {
+      // UNIQUE (coordinator_run_id, external_key) violation surfaces here.
+      const err = error as Error;
+      const message = err.message ?? '';
+      if (message.toLowerCase().includes('unique') || message.includes('duplicate key')) {
+        return apiError(c, 400, 'Task with this external_key already exists in this run');
+      }
+      getLog().error({ err: error, runId }, 'api.coordinator_task_create_failed');
+      return apiError(c, 500, 'Failed to create coordinator task');
+    }
+  });
+
+  // PATCH /api/coordinators/:runId/tasks/:taskId - Transition state and/or merge evidence
+  registerOpenApiRoute(updateCoordinatorTaskStateRoute, async c => {
+    const runId = c.req.param('runId') ?? '';
+    const taskId = c.req.param('taskId') ?? '';
+    try {
+      const task = await coordinatorTaskDb.getCoordinatorTask(taskId);
+      if (task?.coordinator_run_id !== runId) {
+        return apiError(c, 404, 'Coordinator task not found');
+      }
+      const body = getValidatedBody(c, updateCoordinatorTaskStateBodySchema);
+
+      if (body.evidence !== undefined) {
+        try {
+          await coordinatorTaskDb.recordEvidence(taskId, body.evidence);
+        } catch (e) {
+          const err = e as Error;
+          getLog().error({ err, runId, taskId }, 'api.coordinator_task_record_evidence_failed');
+          return apiError(c, 500, 'Failed to record evidence');
+        }
+      }
+
+      if (body.state !== undefined) {
+        try {
+          await coordinatorTaskDb.transitionTaskState(taskId, body.state);
+        } catch (e) {
+          const err = e as Error;
+          // The DB layer throws "no task found ... or task is already terminal" —
+          // map to 400 because it's a state-machine violation, not a server error.
+          if (err.message.includes('already terminal') || err.message.includes('no task found')) {
+            return apiError(c, 400, err.message);
+          }
+          getLog().error({ err, runId, taskId }, 'api.coordinator_task_transition_failed');
+          return apiError(c, 500, 'Failed to transition coordinator task');
+        }
+      }
+
+      const updated = await coordinatorTaskDb.getCoordinatorTask(taskId);
+      if (!updated) return apiError(c, 404, 'Coordinator task not found');
+      return c.json({ task: updated });
+    } catch (error) {
+      getLog().error({ err: error, runId, taskId }, 'api.coordinator_task_update_failed');
+      return apiError(c, 500, 'Failed to update coordinator task');
+    }
+  });
+
+  // GET /api/coordinators/:id/ready-tasks - Ready tasks (state=ready, no active claim)
+  registerOpenApiRoute(getCoordinatorReadyTasksRoute, async c => {
+    const id = c.req.param('id') ?? '';
+    try {
+      const tasks = await coordinatorTaskDb.getReadyTasks(id);
+      return c.json({ tasks });
+    } catch (error) {
+      getLog().error({ err: error, runId: id }, 'api.coordinator_ready_tasks_failed');
+      return apiError(c, 500, 'Failed to list ready coordinator tasks');
+    }
+  });
+
+  // POST /api/coordinators/:runId/tasks/:taskId/claim - Attempt claim
+  // 200 { claim: <row> } on success
+  // 200 { claim: null } when contended (NOT 409)
+  // 429 when run is at max_parallel_workers
+  registerOpenApiRoute(claimCoordinatorTaskRoute, async c => {
+    const runId = c.req.param('runId') ?? '';
+    const taskId = c.req.param('taskId') ?? '';
+    try {
+      const run = await coordinatorRunDb.getCoordinatorRun(runId);
+      if (!run) return apiError(c, 404, 'Coordinator run not found');
+      const task = await coordinatorTaskDb.getCoordinatorTask(taskId);
+      if (task?.coordinator_run_id !== runId) {
+        return apiError(c, 404, 'Coordinator task not found');
+      }
+      if (task.state !== 'ready') {
+        return apiError(c, 400, `Coordinator task is not ready (state: ${task.state})`);
+      }
+
+      // max_parallel_workers enforcement happens here in the API. Note: this
+      // count + INSERT is NOT in a transaction in P4-A — documented as
+      // forward-compatible single-server-process behavior in the ADR §3
+      // ("No multi-process coordination beyond DB constraints").
+      const activeCount = await coordinatorClaimDb.countActiveClaimsForRun(runId);
+      if (activeCount >= run.max_parallel_workers) {
+        return c.json(
+          {
+            error: 'max_parallel_workers reached',
+            detail: `Coordinator run is at its parallelism budget (${String(run.max_parallel_workers)})`,
+          },
+          429
+        );
+      }
+
+      const body = getValidatedBody(c, claimCoordinatorTaskBodySchema);
+      const claim = await coordinatorClaimDb.claimTask({
+        taskId,
+        coordinatorRunId: runId,
+        ...(body.worker_run_id !== undefined ? { workerRunId: body.worker_run_id } : {}),
+        ...(body.worker_label !== undefined ? { workerLabel: body.worker_label } : {}),
+        leaseSeconds: body.lease_seconds ?? 900,
+      });
+      // claim === null means the task already has an active claim — this is a
+      // normal contention signal, NOT an error. Workers ask for the next ready
+      // task instead.
+      return c.json({ claim });
+    } catch (error) {
+      getLog().error({ err: error, runId, taskId }, 'api.coordinator_claim_failed');
+      return apiError(c, 500, 'Failed to claim coordinator task');
+    }
+  });
+
+  // POST /api/coordinators/claims/:claimId/release - Release a claim
+  registerOpenApiRoute(releaseCoordinatorClaimRoute, async c => {
+    const claimId = c.req.param('claimId') ?? '';
+    try {
+      const body = getValidatedBody(c, releaseCoordinatorClaimBodySchema);
+      const claim = await coordinatorClaimDb.releaseClaim(claimId, {
+        outcome: body.outcome,
+        ...(body.evidence !== undefined ? { evidence: body.evidence } : {}),
+      });
+      return c.json({ claim });
+    } catch (error) {
+      const err = error as Error;
+      if (err.message.includes('Coordinator claim not found')) {
+        return apiError(c, 404, 'Coordinator claim not found');
+      }
+      getLog().error({ err, claimId }, 'api.coordinator_claim_release_failed');
+      return apiError(c, 500, 'Failed to release coordinator claim');
+    }
+  });
+
+  // POST /api/coordinators/claims/:claimId/heartbeat - Extend lease
+  registerOpenApiRoute(heartbeatCoordinatorClaimRoute, async c => {
+    const claimId = c.req.param('claimId') ?? '';
+    try {
+      const body = getValidatedBody(c, heartbeatClaimBodySchema);
+      const extended = await coordinatorClaimDb.heartbeatClaim(claimId, body.lease_seconds ?? 900);
+      return c.json({ extended });
+    } catch (error) {
+      getLog().error({ err: error, claimId }, 'api.coordinator_claim_heartbeat_failed');
+      return apiError(c, 500, 'Failed to heartbeat coordinator claim');
     }
   });
 
