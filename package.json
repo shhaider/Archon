@@ -3,7 +3,18 @@
   "version": "0.3.10",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/adapters",
+    "packages/cli",
+    "packages/core",
+    "packages/docs-web",
+    "packages/git",
+    "packages/isolation",
+    "packages/paths",
+    "packages/providers",
+    "packages/server",
+    "packages/gui-smoke",
+    "packages/web",
+    "packages/workflows"
   ],
   "type": "module",
   "scripts": {
@@ -19,7 +30,9 @@
     "check:bundled-skill": "bun run scripts/check-bundled-skill.ts --check",
     "test": "bun --filter '*' --parallel test",
     "test:watch": "bun --filter @archon/server test:watch",
-    "type-check": "bun --filter '*' type-check && bun x tsc --noEmit -p scripts/tsconfig.json",
+    "test:gui": "bun --cwd packages/gui-smoke smoke",
+    "test:gui:install": "bun --cwd packages/gui-smoke smoke:install",
+    "type-check": "bun --filter '*' type-check && bun --cwd packages/gui-smoke type-check && bun x tsc --noEmit -p scripts/tsconfig.json",
     "lint": "bun x eslint . --cache",
     "lint:fix": "bun x eslint . --cache --fix",
     "format": "bun x prettier --write .",
@@ -34,6 +47,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.49.0",
     "@types/bun": "latest",
     "bun-types": "^1.3.5",
     "eslint": "^9.39.1",

@@ -22,6 +22,7 @@ COPY packages/core/package.json ./packages/core/
 # so Bun's workspace lockfile resolves correctly.
 COPY packages/docs-web/package.json ./packages/docs-web/
 COPY packages/git/package.json ./packages/git/
+COPY packages/gui-smoke/package.json ./packages/gui-smoke/
 COPY packages/isolation/package.json ./packages/isolation/
 COPY packages/paths/package.json ./packages/paths/
 COPY packages/providers/package.json ./packages/providers/
@@ -132,6 +133,7 @@ COPY packages/core/package.json ./packages/core/
 # so Bun's workspace lockfile resolves correctly.
 COPY packages/docs-web/package.json ./packages/docs-web/
 COPY packages/git/package.json ./packages/git/
+COPY packages/gui-smoke/package.json ./packages/gui-smoke/
 COPY packages/isolation/package.json ./packages/isolation/
 COPY packages/paths/package.json ./packages/paths/
 COPY packages/providers/package.json ./packages/providers/
