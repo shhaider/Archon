@@ -178,6 +178,7 @@ Acceptance:
 - architecture decision record documents import/port/no-port
 - any ported feature uses Archon's workflow/coordinator/evidence backend
 - no SimpleAgent-only bridge assumptions are imported as authority
+- P5-A audit: docs/adr/0001-emdash-port-evaluation.md (completed 2026-05-06)
 
 ### P6 - Sidecar Extraction From SimpleAgent / AgentOS-NG / OpenSWE
 
@@ -218,4 +219,4 @@ Use Archon to upgrade Archon, with bounded parallelism.
 3. P3-A: design and implement real-execution proof validation for PR-producing
    workflows.
 4. P4-A: design the coordinator/run/task/claim database model and API surface.
-5. P5-A: audit Emdash for GUI/worktree/conversation features worth porting.
+5. P5-A: audit Emdash for GUI/worktree/conversation features worth porting. ✓ completed — see docs/adr/0001-emdash-port-evaluation.md

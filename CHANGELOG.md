@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker: `git config --global --add safe.directory` in the entrypoint now de-duplicates entries before adding, preventing unbounded growth of `~/.gitconfig` now that `/home/appuser` is persisted (#1518).
 - Docker: `setup-auth` now warns at startup when `CODEX_*` env vars are absent but a persisted `~/.codex/auth.json` from a previous run still exists, so operators don't accidentally use stale or revoked credentials (#1518).
 
+### Documentation
+
+- Add P5-A Emdash port evaluation ADR and audit packet (`docs/adr/`).
+
 ## [0.3.10] - 2026-04-29
 
 Maintainer workflow suite, loop output variables, and broad workflow engine fixes
