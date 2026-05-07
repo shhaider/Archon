@@ -5,6 +5,7 @@ on:
     branches: [main, dev]
   pull_request:
     branches: [main, dev]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,7 +18,7 @@ jobs:
     env:
       CI: 'true'
       PORT: '3099'
-      ARCHON_HOME: ${{ runner.temp }}/archon-home
+      ARCHON_HOME: /tmp/archon-gui-smoke-home
     steps:
       - uses: actions/checkout@v4
 
