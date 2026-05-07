@@ -12,6 +12,7 @@
     "packages/paths",
     "packages/providers",
     "packages/server",
+    "packages/gui-smoke",
     "packages/web",
     "packages/workflows"
   ],

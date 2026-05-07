@@ -101,6 +101,15 @@
         "typescript": "^5.0.0",
       },
     },
+    "packages/gui-smoke": {
+      "name": "@archon/gui-smoke",
+      "version": "0.3.10",
+      "devDependencies": {
+        "@playwright/test": "^1.49.0",
+        "@types/node": "^22.0.0",
+        "typescript": "^5.3.0",
+      },
+    },
     "packages/isolation": {
       "name": "@archon/isolation",
       "version": "0.3.10",
@@ -270,6 +279,8 @@
     "@archon/docs-web": ["@archon/docs-web@workspace:packages/docs-web"],
 
     "@archon/git": ["@archon/git@workspace:packages/git"],
+
+    "@archon/gui-smoke": ["@archon/gui-smoke@workspace:packages/gui-smoke"],
 
     "@archon/isolation": ["@archon/isolation@workspace:packages/isolation"],
 
