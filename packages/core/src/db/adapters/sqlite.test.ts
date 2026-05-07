@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'bun:test';
-import { SqliteAdapter } from './sqlite';
+import { sqliteTestHooks, SqliteAdapter } from './sqlite';
 import { unlinkSync } from 'fs';
 import { join } from 'path';
 
@@ -212,6 +212,18 @@ describe('SqliteAdapter', () => {
   });
 
   describe('busy retry', () => {
+    test('retries Windows WAL truncate startup errors only for WAL activation', async () => {
+      const walTruncateError = Object.assign(new Error('disk I/O error'), {
+        code: 'SQLITE_IOERR_TRUNCATE',
+      });
+
+      expect(sqliteTestHooks.isSqliteRetryableError('pragma-wal', walTruncateError)).toBe(true);
+      expect(sqliteTestHooks.isSqliteRetryableError('query', walTruncateError)).toBe(false);
+      expect(sqliteTestHooks.retryDelaysFor('pragma-wal').length).toBeGreaterThan(
+        sqliteTestHooks.retryDelaysFor('query').length
+      );
+    });
+
     test('non-busy errors throw on first attempt without retry', async () => {
       db = createTestDb();
       // FK violation is NOT a busy error — must throw immediately rather than
