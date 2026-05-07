@@ -35,6 +35,24 @@ function isSqliteBusyError(e: unknown): boolean {
   return /database is locked/i.test(e.message);
 }
 
+/**
+ * Windows can surface a simultaneous first-open WAL activation race as
+ * SQLITE_IOERR_TRUNCATE instead of SQLITE_BUSY. Treat that as retryable only
+ * for the idempotent WAL PRAGMA; the same code elsewhere is a real disk I/O
+ * failure and should not be hidden.
+ */
+function isSqliteRetryableError(label: string, e: unknown): boolean {
+  if (isSqliteBusyError(e)) return true;
+  if (!(e instanceof Error)) return false;
+
+  const code = (e as Error & { code?: string }).code;
+  return label === 'pragma-wal' && code === 'SQLITE_IOERR_TRUNCATE';
+}
+
+function retryDelaysFor(label: string): number[] {
+  return label === 'pragma-wal' ? [50, 100, 250, 500, 1000, 2000] : [50, 150, 450];
+}
+
 export class SqliteAdapter implements IDatabase {
   private db: Database;
   readonly dialect = 'sqlite' as const;
@@ -82,27 +100,25 @@ export class SqliteAdapter implements IDatabase {
    * ≤650ms, only spent on real contention — happy path pays nothing.
    */
   private runWithBusyRetry<T>(label: string, op: () => T): T {
-    const delays = [50, 150, 450];
+    const delays = retryDelaysFor(label);
     let lastErr: unknown;
     for (let attempt = 0; attempt <= delays.length; attempt++) {
       try {
         return op();
       } catch (e) {
         lastErr = e;
-        if (!isSqliteBusyError(e) || attempt === delays.length) {
-          if (isSqliteBusyError(e)) {
+        const retryable = isSqliteRetryableError(label, e);
+        if (!retryable || attempt === delays.length) {
+          if (retryable) {
             getLog().error(
               { err: e as Error, label, attempts: attempt + 1 },
-              'db.sqlite_busy_retry_exhausted'
+              'db.sqlite_retry_exhausted'
             );
           }
           throw e;
         }
         const waitMs = delays[attempt];
-        getLog().warn(
-          { err: e as Error, label, attempt: attempt + 1, waitMs },
-          'db.sqlite_busy_retry'
-        );
+        getLog().warn({ err: e as Error, label, attempt: attempt + 1, waitMs }, 'db.sqlite_retry');
         // Synchronous busy-wait: bun:sqlite's run/all/run are all sync, so an
         // `await setTimeout` in this hot path would force every SELECT to
         // yield even on success. The wait fires only on actual SQLITE_BUSY,
@@ -539,4 +555,10 @@ export const sqliteDialect: SqlDialect = {
   daysSince(column: string): string {
     return `(julianday('now') - julianday(${column}))`;
   },
+};
+
+export const sqliteTestHooks = {
+  isSqliteBusyError,
+  isSqliteRetryableError,
+  retryDelaysFor,
 };
