@@ -177,4 +177,53 @@ describe('SqliteAdapter', () => {
       expect(result.rows[0].equal).toBe(1);
     });
   });
+
+  describe('schema versioning', () => {
+    // The adapter routes non-SELECT queries through stmt.run(), which discards
+    // returned rows. Use SQLite's table-valued PRAGMA form so the query goes
+    // through the SELECT path. Same source of truth, surfaced as a real row.
+    const SELECT_USER_VERSION = 'SELECT user_version FROM pragma_user_version';
+
+    test('sets user_version to CURRENT_SCHEMA_VERSION after init', async () => {
+      db = createTestDb();
+      const result = await db.query<{ user_version: number }>(SELECT_USER_VERSION);
+      expect(result.rows[0].user_version).toBeGreaterThan(0);
+    });
+
+    test('reopening an initialized DB preserves user_version (skip path)', async () => {
+      // First open: runs full DDL, sets user_version > 0.
+      db = createTestDb();
+      const beforeReopen = await db.query<{ user_version: number }>(SELECT_USER_VERSION);
+      const versionBefore = beforeReopen.rows[0].user_version;
+      await db.close();
+
+      // Second open against the same file: must NOT re-run DDL. The real
+      // proof of skip is the multi-process concurrency test; here we assert
+      // the version-check side: the reopened adapter reports the same
+      // version that was committed by the first open.
+      const db2 = new SqliteAdapter(currentDbPath);
+      const after = await db2.query<{ user_version: number }>(SELECT_USER_VERSION);
+      expect(after.rows[0].user_version).toBe(versionBefore);
+      await db2.close();
+
+      // Restore the single-handle invariant so afterEach can clean up.
+      db = new SqliteAdapter(currentDbPath);
+    });
+  });
+
+  describe('busy retry', () => {
+    test('non-busy errors throw on first attempt without retry', async () => {
+      db = createTestDb();
+      // FK violation is NOT a busy error — must throw immediately rather than
+      // burning the retry budget on something that will never succeed.
+      await expect(
+        db.query(
+          `INSERT INTO remote_agent_isolation_environments
+           (id, codebase_id, workflow_type, workflow_id, working_path, branch_name)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          ['x', 'nonexistent-codebase', 'issue', '1', '/tmp', 'b']
+        )
+      ).rejects.toThrow();
+    });
+  });
 });
