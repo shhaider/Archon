@@ -14,7 +14,7 @@ import { createLogger } from '@archon/paths';
  * skipped entirely so concurrent CLI processes don't all fight over the
  * write-lock for an idempotent no-op.
  */
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;

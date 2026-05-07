@@ -1,4 +1,5 @@
 import { describe, test, expect, afterEach } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { sqliteTestHooks, SqliteAdapter } from './sqlite';
 import { unlinkSync } from 'fs';
 import { join } from 'path';
@@ -11,6 +12,14 @@ function createTestDb(): SqliteAdapter {
     `.test-sqlite-adapter-${Date.now()}-${Math.random().toString(36).slice(2)}.db`
   );
   return new SqliteAdapter(currentDbPath);
+}
+
+function createTestDbPath(): string {
+  currentDbPath = join(
+    import.meta.dir,
+    `.test-sqlite-adapter-${Date.now()}-${Math.random().toString(36).slice(2)}.db`
+  );
+  return currentDbPath;
 }
 
 /** Insert a parent codebase row to satisfy FK constraints */
@@ -208,6 +217,24 @@ describe('SqliteAdapter', () => {
 
       // Restore the single-handle invariant so afterEach can clean up.
       db = new SqliteAdapter(currentDbPath);
+    });
+
+    test('upgrades an existing v1 database by creating coordinator tables', async () => {
+      const dbPath = createTestDbPath();
+      const rawDb = new Database(dbPath);
+      rawDb.run('PRAGMA user_version = 1');
+      rawDb.close();
+
+      db = new SqliteAdapter(dbPath);
+
+      const version = await db.query<{ user_version: number }>(SELECT_USER_VERSION);
+      expect(version.rows[0].user_version).toBeGreaterThan(1);
+
+      const tables = await db.query<{ name: string }>(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name = $1`,
+        ['remote_agent_coordinator_runs']
+      );
+      expect(tables.rows).toHaveLength(1);
     });
   });
 
